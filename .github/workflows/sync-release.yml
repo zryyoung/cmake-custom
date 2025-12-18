@@ -1,0 +1,55 @@
+name: Sync All Releases from HomuHomu833
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'  # 每天凌晨 3 点自动运行
+
+jobs:
+  sync-all-releases:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout self
+        uses: actions/checkout@v3
+
+      - name: Install GitHub CLI and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install gh jq -y
+
+      - name: Fetch all releases from upstream
+        run: |
+          gh api -H "Accept: application/vnd.github+json" \
+            /repos/HomuHomu833/cmake-custom/releases > releases.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync each release
+        run: |
+          mkdir -p release_assets
+
+          releases=$(jq -c '.[]' releases.json)
+          for release in $releases; do
+            tag=$(echo "$release" | jq -r '.tag_name')
+            name=$(echo "$release" | jq -r '.name')
+            body=$(echo "$release" | jq -r '.body // "Synced from upstream"')
+
+            echo "🔍 Checking if tag $tag exists in current repo..."
+            if gh release view "$tag" --repo ${{ github.repository }} > /dev/null 2>&1; then
+              echo "✅ Release $tag already exists. Skipping."
+              continue
+            fi
+
+            echo "⬇️ Downloading assets for $tag..."
+            rm -rf release_assets/*
+            gh release download "$tag" -R HomuHomu833/cmake-custom -D release_assets || echo "No assets found."
+
+            echo "🚀 Creating release $tag in current repo..."
+            gh release create "$tag" release_assets/* \
+              --repo ${{ github.repository }} \
+              --title "$name" \
+              --notes "$body" || echo "⚠️ Failed to create release $tag"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
