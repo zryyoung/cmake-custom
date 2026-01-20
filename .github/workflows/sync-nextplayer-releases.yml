@@ -1,64 +1,47 @@
-name: Sync Releases from anilbeesetti/nextplayer
+name: Rollback Synced Releases Only
 
 on:
-  workflow_dispatch:   # 手动触发
-  # schedule:
-  #   - cron: '0 3 * * *'   # 可选：每天同步一次
+  workflow_dispatch:
 
 jobs:
-  sync-releases:
+  rollback:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout current repository
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 必须，才能删 tag
 
-      - name: Install GitHub CLI and jq
+      - name: Install gh & jq
         run: |
           sudo apt-get update
           sudo apt-get install -y gh jq
 
-      - name: Fetch upstream releases
+      - name: Find synced releases
         run: |
-          gh api \
-            -H "Accept: application/vnd.github+json" \
-            /repos/anilbeesetti/nextplayer/releases > releases.json
+          echo "🔍 查找由 GitHub Actions 同步创建的 releases..."
+          gh api /repos/${{ github.repository }}/releases > releases.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync releases to fork
+      - name: Delete synced releases and tags
         run: |
-          mkdir -p release_assets
+          jq -c '.[]' releases.json | while read -r rel; do
+            id=$(echo "$rel" | jq -r '.id')
+            tag=$(echo "$rel" | jq -r '.tag_name')
+            author=$(echo "$rel" | jq -r '.author.login // ""')
+            body=$(echo "$rel" | jq -r '.body // ""')
 
-          jq -c '.[]' releases.json | while read -r release; do
-            tag=$(echo "$release" | jq -r '.tag_name')
-            name=$(echo "$release" | jq -r '.name // .tag_name')
-            body=$(echo "$release" | jq -r '.body // "Synced from upstream: anilbeesetti/nextplayer"')
+            if echo "$author" | grep -q "github-actions" \
+               || echo "$body" | grep -qi "Synced from upstream"; then
+              echo "🗑 删除同步 Release: $tag"
+              gh api -X DELETE /repos/${{ github.repository }}/releases/$id
 
-            echo "🔍 Checking release: $tag"
-
-            if gh release view "$tag" --repo "${{ github.repository }}" > /dev/null 2>&1; then
-              echo "✅ Release $tag already exists, skipping."
-              continue
-            fi
-
-            echo "⬇️ Downloading assets for $tag"
-            rm -rf release_assets/*
-            gh release download "$tag" \
-              -R anilbeesetti/nextplayer \
-              -D release_assets || echo "ℹ️ No assets for $tag"
-
-            echo "🚀 Creating release $tag in fork"
-            if [ "$(ls -A release_assets 2>/dev/null)" ]; then
-              gh release create "$tag" release_assets/* \
-                --repo "${{ github.repository }}" \
-                --title "$name" \
-                --notes "$body"
+              echo "🗑 删除对应 Tag: $tag"
+              git push origin ":refs/tags/$tag"
             else
-              gh release create "$tag" \
-                --repo "${{ github.repository }}" \
-                --title "$name" \
-                --notes "$body"
+              echo "✅ 保留原有 Release: $tag"
             fi
           done
         env:
