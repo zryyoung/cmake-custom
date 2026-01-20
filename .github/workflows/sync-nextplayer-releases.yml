@@ -1,0 +1,65 @@
+name: Sync Releases from anilbeesetti/nextplayer
+
+on:
+  workflow_dispatch:   # 手动触发
+  # schedule:
+  #   - cron: '0 3 * * *'   # 可选：每天同步一次
+
+jobs:
+  sync-releases:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh jq
+
+      - name: Fetch upstream releases
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            /repos/anilbeesetti/nextplayer/releases > releases.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync releases to fork
+        run: |
+          mkdir -p release_assets
+
+          jq -c '.[]' releases.json | while read -r release; do
+            tag=$(echo "$release" | jq -r '.tag_name')
+            name=$(echo "$release" | jq -r '.name // .tag_name')
+            body=$(echo "$release" | jq -r '.body // "Synced from upstream: anilbeesetti/nextplayer"')
+
+            echo "🔍 Checking release: $tag"
+
+            if gh release view "$tag" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+              echo "✅ Release $tag already exists, skipping."
+              continue
+            fi
+
+            echo "⬇️ Downloading assets for $tag"
+            rm -rf release_assets/*
+            gh release download "$tag" \
+              -R anilbeesetti/nextplayer \
+              -D release_assets || echo "ℹ️ No assets for $tag"
+
+            echo "🚀 Creating release $tag in fork"
+            if [ "$(ls -A release_assets 2>/dev/null)" ]; then
+              gh release create "$tag" release_assets/* \
+                --repo "${{ github.repository }}" \
+                --title "$name" \
+                --notes "$body"
+            else
+              gh release create "$tag" \
+                --repo "${{ github.repository }}" \
+                --title "$name" \
+                --notes "$body"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
